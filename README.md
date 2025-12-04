@@ -278,5 +278,5 @@ For questions or collaboration:
 
 **Etienne Ntumba Kabongo**  
 Email: *etienne.kabongo@mcgill.ca*  
-Affiliation: University of Stellenbosch / Audrey Grant Lab  
+Affiliation: Mcgill's University / Audrey Grant Lab  
 # gwas-gcta-pipeline
