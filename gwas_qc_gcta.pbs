@@ -1,0 +1,116 @@
+#!/bin/bash
+#PBS -N gwas_qc_gcta
+#PBS -l select=1:ncpus=8:mem=64GB
+#PBS -l walltime=06:00:00
+#PBS -q serial
+#PBS -P CBBI0818
+#PBS -o logs/qc_gcta_${PBS_JOBID}.out
+#PBS -e logs/qc_gcta_${PBS_JOBID}.err
+#PBS -m abe
+#PBS -M ekabongo@student.sun.ac.za
+
+cd "$PBS_O_WORKDIR"
+
+mkdir -p logs
+mkdir -p qc_results/gcta
+
+module purge
+module load chpc/BIOMODULES
+module load plink/1.9
+module load R/4.2.0
+module load gcta/1.94  # adapte au nom du module si besoin
+
+echo "=========================================="
+echo "Job QC + GCTA GWAS"
+echo "Date: $(date)"
+echo "Job ID: $PBS_JOBID"
+echo "Noeud: $(hostname)"
+echo "=========================================="
+
+############################################
+# 1. Lancer le pipeline QC
+############################################
+
+QC_SCRIPT="gwas_qc_pipeline.sh"
+
+if [ ! -f "${QC_SCRIPT}" ]; then
+    echo "ERREUR: ${QC_SCRIPT} non trouvé !"
+    exit 1
+fi
+
+chmod +x "${QC_SCRIPT}"
+
+echo "Lancement QC..."
+./"${QC_SCRIPT}" 2>&1 | tee "logs/qc_execution_${PBS_JOBID}.log"
+
+if [ $? -ne 0 ]; then
+    echo "ERREUR: QC ÉCHOUÉ !"
+    exit 1
+fi
+
+echo ""
+echo "QC TERMINÉ AVEC SUCCÈS!"
+if [ -f /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/QC_REPORT.txt ]; then
+    cat /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/QC_REPORT.txt
+fi
+
+############################################
+# 2. GCTA : GRM + MLMA
+############################################
+
+echo ""
+echo "=========================================="
+echo "Préparation pour GCTA"
+echo "=========================================="
+
+# GRM sur SNPs QC finaux, éventuellement LD-prunés
+plink --bfile /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/step5_final/qc_final \
+      --indep-pairwise 50 5 0.2 \
+      --maf 0.05 \
+      --out /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_ld_pruned \
+      --threads 8 \
+      --memory 60000 \
+      --allow-no-sex
+
+plink --bfile /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/step5_final/qc_final \
+      --extract /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_ld_pruned.prune.in \
+      --make-grm \
+      --out /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_grm \
+      --threads 8 \
+      --memory 60000 \
+      --allow-no-sex
+
+# Phénotype (sans header)
+awk '{print $1, $2, $6}' /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/step5_final/qc_final.fam > /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_pheno.txt
+
+# Covariables (sans header)
+tail -n +2 /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/step5_final/covariates.txt > /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_covars.txt
+
+echo ""
+echo "=========================================="
+echo "Lancement GCTA MLMA"
+echo "=========================================="
+
+gcta64 --mlma \
+       --bfile /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/step5_final/qc_final \
+       --grm /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_grm \
+       --pheno /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_pheno.txt \
+       --covar /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_covars.txt \
+       --out /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_mlma_results
+
+echo "GCTA terminé. Résultats : qc_results/gcta/gcta_mlma_results.mlma"
+
+############################################
+# 3. Manhattan / QQ / lambda GC (R)
+############################################
+
+echo ""
+echo "=========================================="
+echo "Génération des graphiques (Manhattan, QQ, lambda GC)"
+echo "=========================================="
+
+Rscript /mnt/lustre/groups/CBBI0818/TZ/data/gwas_gcta_plots.R /mnt/lustre/groups/CBBI0818/TZ/data/qc_results/gcta/gcta_mlma_results.mlma
+
+echo "Plots générés dans qc_results/gcta/"
+echo "Date de fin : $(date)"
+
